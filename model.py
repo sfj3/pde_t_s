@@ -7,7 +7,8 @@ from IPython.display import display, clear_output
 from IPython.display import Image
 import os
 import numpy as np
-
+from PIL import Image
+import io
 # Load and process the DataFrame
 df = pd.read_pickle('sorted.pkl')  # Ensure this is already sorted by time
 # Assuming df is your DataFrame
@@ -93,9 +94,9 @@ def initialize_optimizer(model, lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=
 # Example usage
 d_model = 16
 nhead = 2
-num_encoder_layers = 8
-num_decoder_layers = 8
-dim_feedforward = 64
+num_encoder_layers = 32
+num_decoder_layers = 32
+dim_feedforward = 128
 dropout = 0.01
 activation = 'relu'
 layer_norm_eps = 1e-5
@@ -123,100 +124,93 @@ total_loss_values = []
 # Directory to save the plots
 if not os.path.exists('plots'):
     os.makedirs('plots')
+if not os.path.exists('plots'):
+    os.makedirs('plots')
 
-for epoch in range(num_epochs):
-    for start in range(0, x_sym_tensor.size(0) - window_size, window_size):
-        end = start + window_size
-        seq_input = x_sym_tensor[start:end, :]
-        
-        # Create batches within the window
-        for i in range(0, seq_input.size(0) - batch_size, batch_size):
-            batch_input = seq_input[i:i+batch_size, :]
-            batch_target = seq_input[i+1:i+batch_size+1, :]  # Target is the next step
+loss_s_values = []
+loss_entropy_pde_csts_values = []
+total_loss_values = []
 
-            # Forward pass
-            output = model(batch_input, batch_target)
+fig, ax = plt.subplots(figsize=(10, 5))
 
-            # Apply the transformation to tensors
-            int_output = tensor_to_int(output)
-            int_batch_input = tensor_to_int(batch_input)
-            int_batch_target = tensor_to_int(batch_target)
+for epoch in range(n_epochs):
+    for i in range(0, len(x_sym), batch_size):
+        batch_sym = x_sym[i:i+batch_size]
+        batch_add = x_add[i:i+batch_size]
 
-            # Normalize outputs
-            output_df = torch.stack(((int_output % 150) - 90, torch.div(int_output, 150).float() + 800), dim=-1)
-            input_df = torch.stack(((int_batch_input % 150) - 90, torch.div(int_batch_input, 150).float() + 800), dim=-1)
-            target_df = torch.stack(((int_batch_target % 150) - 90, torch.div(int_batch_target, 150).float() + 800), dim=-1)
+        # Forward pass
+        outputs = model(batch_sym[:-1], batch_add[:-1])
 
-            lhs_list, rhs_list = [], []
+        # Calculate LHS and RHS
+        Radiation = batch_add[1:, 1]
+        Wind_Speed = batch_add[1:, 2]
+        humidity_change = batch_add[1:, 0] - batch_add[:-1, 0]
 
-            for step in range(4):
-                Radiation = x_add[0, start+i+step+1, 1]  # Use the next step for target
-                Wind_Speed = x_add[0, start+i+step+1, 2]  # Use the next step for target
-                humidity_change = x_add[0, start+i+step+1, 0] - x_add[0, start+i+step, 0]  # Use the next step for target
+        lhs_output = torch.log((1 / (outputs[:, 0] + 273) * (outputs[:, 1] / 850) ** 8.314 + (850 / outputs[:, 1]) ** 8.314)) - torch.log((1 / (batch_sym[:-1, 0] + 273) * (batch_sym[:-1, 1] / 850) ** 8.314 + (850 / batch_sym[:-1, 1]) ** 8.314))
+        rhs_output = (1 / (outputs[:, 0] + 273)) * (model.A * Radiation + model.B * humidity_change + model.C) + model.D * Wind_Speed * (torch.log((1 / (outputs[:, 0] + 273) * (outputs[:, 1] / 850) ** 8.314 + (850 / outputs[:, 1]) ** 8.314)))
 
-                lhs = torch.log((1 / (target_df[:, step, 0] + 273) * (target_df[:, step, 1] / 850) ** 8.314 + (850 / target_df[:, step, 1]) ** 8.314)) - torch.log((1 / (input_df[:, step, 0] + 273) * (input_df[:, step, 1] / 850) ** 8.314 + (850 / input_df[:, step, 1]) ** 8.314))
-                rhs = (1 / (target_df[:, step, 0] + 273)) * (Radiation + humidity_change + 1) + Wind_Speed * (torch.log((1 / (target_df[:, step, 0] + 273) * (target_df[:, step, 1] / 850) ** 8.314 + (850 / target_df[:, step, 1]) ** 8.314)))
+        lhs_actual = torch.log((1 / (batch_sym[1:, 0] + 273) * (batch_sym[1:, 1] / 850) ** 8.314 + (850 / batch_sym[1:, 1]) ** 8.314)) - torch.log((1 / (batch_sym[:-1, 0] + 273) * (batch_sym[:-1, 1] / 850) ** 8.314 + (850 / batch_sym[:-1, 1]) ** 8.314))
+        rhs_actual = (1 / (batch_sym[1:, 0] + 273)) * (Radiation + humidity_change + 1) + Wind_Speed * (torch.log((1 / (batch_sym[1:, 0] + 273) * (batch_sym[1:, 1] / 850) ** 8.314 + (850 / batch_sym[1:, 1]) ** 8.314)))
 
-                lhs_list.append(lhs)
-                rhs_list.append(rhs)
+        lhs_list.append(lhs_output.mean().item())
+        rhs_list.append(rhs_output.mean().item())
 
-            lhs_tensor = torch.stack(lhs_list, dim=1)
-            rhs_tensor = torch.stack(rhs_list, dim=1)
+        print("LHS Output:", lhs_output.mean().item(), "RHS Output:", rhs_output.mean().item())
+        print("LHS Actual:", lhs_actual.mean().item(), "RHS Actual:", rhs_actual.mean().item())
+        print("A:", model.A, "B:", model.B, "C:", model.C, "D:", model.D)
 
-            # Solve for A, B, C, D
-            solution = torch.linalg.lstsq(rhs_tensor, lhs_tensor).solution.reshape(batch_size, 4)
-            A, B, C, D = solution[:, 0], solution[:, 1], solution[:, 2], solution[:, 3]
+        loss_s = criterion(outputs, batch_sym[1:])
+        print("Outputs are ", outputs, "Actual is ", batch_sym[1:], 'inputs are: ', batch_sym[:-1])
 
-            # Recalculate RHS using the obtained A, B, C, D
-            Radiation = x_add[0, end, 1]  # Use the last step of the window
-            Wind_Speed = x_add[0, end, 2]  # Use the last step of the window
-            humidity_change = x_add[0, end, 0] - x_add[0, end-1, 0]  # Use the last step of the window
-            rhs_output = (1 / (output_df[:, -1, 0] + 273)) * (A * Radiation + B * humidity_change + C) + D * Wind_Speed * (torch.log((1 / (output_df[:, -1, 0] + 273) * (output_df[:, -1, 1] / 850) ** 8.314 + (850 / output_df[:, -1, 1]) ** 8.314)))
+        # Calculate loss_entropy_pde_csts
+        loss_entropy_pde_csts = 100 * torch.abs(rhs_output - lhs_actual) * torch.abs(rhs_output - rhs_actual) * torch.abs(lhs_output - rhs_actual) * torch.abs(lhs_output - lhs_actual)
+        print("Entropy PDE Loss:", loss_entropy_pde_csts.mean().item())
+        print("transformer Loss is ", loss_s)
 
-            # Calculate the losses
-            loss_entropy_pde_csts = 10 * torch.abs(lhs_tensor[:, -1] - rhs_output)
-            loss_actual = nn.CrossEntropyLoss()(torch.log(output_df[:, :, 1] / (output_df[:, :, 0] + 273)), torch.log(target_df[:, :, 1] / (target_df[:, :, 0] + 273)))
+        loss = loss_entropy_pde_csts.mean().item() + loss_s if not torch.isnan(loss_entropy_pde_csts.mean()) else loss_s
+        print('total loss is ', loss)
 
-            # Compute the binary cross-entropy loss
-            bce_loss = nn.BCELoss()(output, batch_target)
-            
-            # Combine the losses
-            loss = torch.max(torch.stack([bce_loss, loss_entropy_pde_csts.mean(), loss_actual]))
+        # Backward pass and optimization
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
-            # Backward pass and optimization
-            optimizer.zero_grad()
-            loss.backward()
-            
-            # Clip gradients
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
-            
-            optimizer.step()
+        # Store the loss values
+        loss_s_values.append(loss_s.item())
+        loss_entropy_pde_csts_values.append(loss_entropy_pde_csts.mean().item())
+        total_loss_values.append(loss.item())
 
-            # Store loss values for plotting
-            bce_loss_values.append(bce_loss.item())
-            loss_entropy_pde_csts_values.append(loss_entropy_pde_csts.mean().item())
-            loss_actual_values.append(loss_actual.item())
-            total_loss_values.append(loss.item())
+    # Clear the plot
+    ax.clear()
 
-        # Print the loss for every 10 epochs
-        if (epoch + 1) % 10 == 0:
-            print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}")
+    # Plot the losses
+    ax.plot(loss_s_values, label='Transformer Loss')
+    ax.plot(loss_entropy_pde_csts_values, label='Entropy PDE Loss')
+    ax.plot(total_loss_values, label='Total Loss')
 
-        # Plot the losses
-        clear_output(wait=True)
-        plt.figure(figsize=(10, 5))
-        plt.plot(bce_loss_values, label='BCE Loss')
-        plt.plot(loss_entropy_pde_csts_values, label='Entropy PDE Consts Loss')
-        plt.plot(loss_actual_values, label='Actual Loss')
-        plt.plot(total_loss_values, label='Total Loss')
-        plt.xlabel('Iterations')
-        plt.ylabel('Loss')
-        plt.legend()
-        plt.savefig('plots/loss_plot.png')
-        plt.close()
+    # Set y-scale to logarithmic
+    ax.set_yscale('log')
 
-        # Display the plot
-        display(Image(filename='plots/loss_plot.png'))
+    ax.set_xlabel('Iterations')
+    ax.set_ylabel('Loss (log scale)')
+    ax.legend()
+
+    # Save the plot to a buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+
+    # Open the image from the buffer
+    img = Image.open(buf)
+
+    # Display the plot
+    clear_output(wait=True)
+    display(img)
+
+    # Save the plot to a file
+    plt.savefig(f'plots/loss_plot_epoch_{epoch+1}.png')
+
+    print(f"Epoch [{epoch+1}/{n_epochs}] completed.")
 
 # Convert the binary output to binary strings
 output_binary = output.int().apply_(lambda x: ''.join(map(str, x.tolist()))).tolist()

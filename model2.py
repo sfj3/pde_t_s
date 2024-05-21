@@ -7,6 +7,9 @@ from IPython.display import display, clear_output
 from IPython.display import Image
 import os
 import numpy as np
+import io
+from PIL import Image
+from torch.optim.lr_scheduler import StepLR
 
 # Load and process the DataFrame
 df = pd.read_pickle('sorted.pkl')  # Ensure this is already sorted by time
@@ -45,11 +48,19 @@ class TransformerModel(nn.Module):
         encoder_layers = nn.TransformerEncoderLayer(n_hiddens, n_heads, n_hiddens, dropout)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
         self.decoder = nn.Linear(n_hiddens, 2)
-        self.A = nn.Parameter(torch.randn(1))
-        self.B = nn.Parameter(torch.randn(1))
-        self.C = nn.Parameter(torch.randn(1))
-        self.D = nn.Parameter(torch.randn(1))
-
+        self.nn_ABCD = nn.Sequential(
+            nn.Linear(2, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, 128),
+            nn.ReLU(),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Linear(128, 4)
+        )
     def forward(self, src_sym, src_add):
         src_sym = self.embedding_sym(src_sym)
         src_add = self.embedding_add(src_add)
@@ -57,27 +68,46 @@ class TransformerModel(nn.Module):
         src = src + self.pos_encoder(src)
         output = self.transformer_encoder(src)
         output = 100 * self.decoder(output[-1])
-        return output
+        ABCD = self.nn_ABCD(output)
+        A, B, C, D = ABCD[:, 0], ABCD[:, 1], ABCD[:, 2], ABCD[:, 3]
+        return output, A, B, C, D
 
 # Parameters
-n_features = 5
-n_hiddens = 256
-n_layers = 12
-n_heads = 32
+n_features = 8
+n_hiddens = 128
+n_layers = 64
+n_heads = 32*2
 n_epochs = 100
-batch_size = 32
-learning_rate = 0.0001
+batch_size = 32*2
+learning_rate = 0.0004
 
 # Create the model
 model = TransformerModel(n_features, n_hiddens, n_layers, n_heads)
 
 # Loss function and optimizer
-criterion = nn.MSELoss()
+criterion = nn.MSELoss() 
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 # Training loop
 A_list, B_list, C_list, D_list = [], [], [], []
 lhs_list, rhs_list = [], []
+
+import os
+if not os.path.exists('plots'):
+    os.makedirs('plots')
+
+loss_s_values = []
+loss_entropy_pde_csts_values = []
+total_loss_values = []
+
+if not os.path.exists('plots'):
+    os.makedirs('plots')
+
+loss_s_values = []
+loss_entropy_pde_csts_values = []
+total_loss_values = []
+
+fig, ax = plt.subplots(figsize=(10, 5))
 
 for epoch in range(n_epochs):
     for i in range(0, len(x_sym), batch_size):
@@ -85,7 +115,7 @@ for epoch in range(n_epochs):
         batch_add = x_add[i:i+batch_size]
 
         # Forward pass
-        outputs = model(batch_sym[:-1], batch_add[:-1])
+        outputs, A, B, C, D = model(batch_sym[:-1], batch_add[:-1])
 
         # Calculate LHS and RHS
         Radiation = batch_add[1:, 1]
@@ -93,72 +123,66 @@ for epoch in range(n_epochs):
         humidity_change = batch_add[1:, 0] - batch_add[:-1, 0]
 
         lhs_output = torch.log((1 / (outputs[:, 0] + 273) * (outputs[:, 1] / 850) ** 8.314 + (850 / outputs[:, 1]) ** 8.314)) - torch.log((1 / (batch_sym[:-1, 0] + 273) * (batch_sym[:-1, 1] / 850) ** 8.314 + (850 / batch_sym[:-1, 1]) ** 8.314))
-        rhs_output = (1 / (outputs[:, 0] + 273)) * (model.A * Radiation + model.B * humidity_change + model.C) + model.D * Wind_Speed * (torch.log((1 / (outputs[:, 0] + 273) * (outputs[:, 1] / 850) ** 8.314 + (850 / outputs[:, 1]) ** 8.314)))
+        rhs_output = (1 / (outputs[:, 0] + 273)) * (A * Radiation + B * humidity_change + C) + D * Wind_Speed * (torch.log((1 / (outputs[:, 0] + 273) * (outputs[:, 1] / 850) ** 8.314 + (850 / outputs[:, 1]) ** 8.314)))
 
         lhs_actual = torch.log((1 / (batch_sym[1:, 0] + 273) * (batch_sym[1:, 1] / 850) ** 8.314 + (850 / batch_sym[1:, 1]) ** 8.314)) - torch.log((1 / (batch_sym[:-1, 0] + 273) * (batch_sym[:-1, 1] / 850) ** 8.314 + (850 / batch_sym[:-1, 1]) ** 8.314))
         rhs_actual = (1 / (batch_sym[1:, 0] + 273)) * (Radiation + humidity_change + 1) + Wind_Speed * (torch.log((1 / (batch_sym[1:, 0] + 273) * (batch_sym[1:, 1] / 850) ** 8.314 + (850 / batch_sym[1:, 1]) ** 8.314)))
 
         lhs_list.append(lhs_output.mean().item())
         rhs_list.append(rhs_output.mean().item())
-        
+
         print("LHS Output:", lhs_output.mean().item(), "RHS Output:", rhs_output.mean().item())
         print("LHS Actual:", lhs_actual.mean().item(), "RHS Actual:", rhs_actual.mean().item())
-        print("A:", model.A, "B:", model.B, "C:", model.C, "D:", model.D)
-        loss_s = criterion(outputs, batch_sym[1:])
-        print( "Outputs are", outputs, "Actual is", batch_sym[1:])
-        
+        print("A:", A, "B:", B, "C:", C, "D:", D)
+
+        loss_s = torch.log((criterion(outputs, batch_sym[1:]) + torch.std(outputs - batch_sym[1:]) + torch.max(torch.abs(criterion(outputs[1:], batch_sym[2:]) - criterion(outputs[:-1], batch_sym[1:-1]))))**4)
+        print("Outputs are ", outputs, "Actual is ", batch_sym[1:], 'inputs are: ', batch_sym[:-1])
+
         # Calculate loss_entropy_pde_csts
-        loss_entropy_pde_csts = torch.abs(rhs_output - lhs_actual)*torch.abs(rhs_output - rhs_actual)*torch.abs(lhs_output - rhs_actual)*torch.abs(lhs_output - lhs_actual)
+        loss_entropy_pde_csts = torch.log(2*torch.abs(rhs_output - lhs_output) * torch.abs(rhs_actual - lhs_actual))
         print("Entropy PDE Loss:", loss_entropy_pde_csts.mean().item())
         print("transformer Loss is ", loss_s)
+
         loss = loss_entropy_pde_csts.mean().item() + loss_s if not torch.isnan(loss_entropy_pde_csts.mean()) else loss_s
-        print('total loss is ',loss)
+        print('total loss is ', loss)
+
         # Backward pass and optimization
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.4)
         optimizer.step()
 
+        # Store the loss values
+        loss_s_values.append(loss_s.item())
+        loss_entropy_pde_csts_values.append(loss_entropy_pde_csts.mean().item())
+        total_loss_values.append(loss.item())
+
+        # Clear the plot
+        ax.clear()
+
+        # Plot the losses
+        ax.plot(loss_s_values, label='Transformer Loss')
+        ax.plot(loss_entropy_pde_csts_values, label='Entropy PDE Loss')
+        ax.plot(total_loss_values, label='Total Loss')
+
+
+        ax.set_xlabel('Iterations')
+        ax.set_ylabel('Loss')
+        ax.legend()
+
+        # Save the plot to a buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0)
+
+        # Open the image from the buffer
+        img = Image.open(buf)
+
+        # Display the plot
+        clear_output(wait=True)
+        display(img)
+
+        # Save the plot to a file
+        plt.savefig(f'plots/loss_plot_epoch_{epoch+1}.png')
+
     print(f"Epoch [{epoch+1}/{n_epochs}], Loss: {loss.item():.4f}")
-    print("A:", model.A.item(), "B:", model.B.item(), "C:", model.C.item(), "D:", model.D.item())
-    A_list.append(model.A.item())
-    B_list.append(model.B.item())
-    C_list.append(model.C.item())
-    D_list.append(model.D.item())
-
-# Plot the evolution of constants
-plt.figure(figsize=(12, 8))
-plt.subplot(2, 2, 1)
-plt.plot(A_list)
-plt.title("Evolution of Constant A")
-
-plt.subplot(2, 2, 2)
-plt.plot(B_list)
-plt.title("Evolution of Constant B")
-
-plt.subplot(2, 2, 3)
-plt.plot(C_list)
-plt.title("Evolution of Constant C")
-
-plt.subplot(2, 2, 4)
-plt.plot(D_list)
-plt.title("Evolution of Constant D")
-
-plt.tight_layout()
-plt.show()
-
-# Plot LHS and RHS
-plt.figure(figsize=(12, 4))
-plt.subplot(1, 2, 1)
-plt.plot(lhs_list, label="LHS Output")
-plt.plot(rhs_list, label="RHS Output")
-plt.legend()
-plt.title("LHS and RHS Output")
-
-plt.subplot(1, 2, 2)
-plt.plot(lhs_actual, label="LHS Actual")
-plt.plot(rhs_actual, label="RHS Actual")
-plt.legend()
-plt.title("LHS and RHS Actual")
-
-plt.tight_layout()
-plt.show()
