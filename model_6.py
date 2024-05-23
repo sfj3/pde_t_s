@@ -22,13 +22,13 @@ class TransformerModel(nn.Module):
         super(TransformerModel, self).__init__()
         self.embedding = nn.Linear(5, n_hiddens)
         encoder_layers = nn.TransformerEncoderLayer(n_hiddens, n_heads, n_hiddens, dropout)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)#try lstm instead of transformer here
         self.decoder = nn.Linear(n_hiddens, 4)
 
         self.embedding_greek = nn.Linear(5, n_hiddens)
         encoder_layers_greek = nn.TransformerEncoderLayer(n_hiddens, n_heads, n_hiddens, dropout)
         self.transformer_encoder_greek = nn.TransformerEncoder(encoder_layers_greek, n_layers)
-        self.decoder_greek = nn.Linear(n_hiddens, 5)
+        self.decoder_greek = nn.Linear(n_hiddens, 6)
 
     def forward(self, src):
         grk = src
@@ -87,12 +87,12 @@ for epoch in range(n_epochs):
         d_entropy_pt = torch.log(temp_2/temp_1)  - 8.314 * torch.log(p_2/p_1) # the actual delta entropy
         #now the entropy loss with the learned constant entropy
         #learned constant entropy
-        alpha,beta,gamma,xi,mu = outputs_grk
-        d_entropy_lce = alpha/temp_2 + beta * i_1 + gamma * v_1 * rh_1 + xi * (rh_2 - rh_1)
+        alpha,beta,gamma,xi,mu,theta = outputs_grk
+        d_entropy_lce = alpha/temp_2 + beta * i_2 + gamma * v_2 * rh_2 + xi * (rh_2 - rh_1)
         #loss for the learned constants to be accurate (learned constant entropy constants loss)
-        loss_lcec = 100*(torch.abs(d_entropy_lce-d_entropy_pt)+1)*(torch.abs(mu-d_entropy_pt)+1)
+        loss_lcec = 100*(torch.abs(d_entropy_lce-d_entropy_pt)+1)*(torch.abs(mu-d_entropy_pt)+1)*(torch.abs(theta - (rh_2 - rh_1))) #before there was no constant theta
         #now we can compute the temperature and add that to the final loss
-        t_pred = alpha * (mu - beta * i_1 - gamma * v_1 * rh_1 - xi *(rh_2 - rh_1))**-1
+        t_pred = alpha * (mu - beta * i_1 - gamma * v_1 * rh_1 - xi *(theta))**-1 #before this was rh2-rh1 instead of theta, you could use rh1 as well to try
         # and the loss on the temperature: 
         # Backward pass and optimization
         optimizer.zero_grad()
