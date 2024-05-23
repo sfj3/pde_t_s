@@ -10,7 +10,7 @@ import numpy as np
 import io
 from PIL import Image
 from torch.optim.lr_scheduler import StepLR
-
+import torch.nn.functional as F
 # Load and process the DataFrame
 df = pd.read_pickle('sorted.pkl')  # Ensure this is already sorted by time
 
@@ -40,46 +40,73 @@ class PositionalEncoding(nn.Module):
         return pe
 
 class TransformerModel(nn.Module):
-    def __init__(self, n_features, n_hiddens, n_layers, n_heads, dropout=0.1):
+    def __init__(self, n_features, n_hiddens, n_layers, n_heads, dropout=0.1, context_size=32):
         super(TransformerModel, self).__init__()
+        self.context_size = context_size
         self.embedding_sym = nn.Linear(2, n_hiddens // 2)
         self.embedding_add = nn.Linear(3, n_hiddens // 2)
-        self.pos_encoder = PositionalEncoding(n_hiddens)
+        self.pos_encoder = nn.Embedding(1000, n_hiddens)  # Learned positional embeddings
         encoder_layers = nn.TransformerEncoderLayer(n_hiddens, n_heads, n_hiddens, dropout)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)
+        self.conv1 = nn.Conv1d(n_hiddens, n_hiddens, kernel_size=3, padding=1)  # Convolutional layer
+        self.additive_attention = nn.Linear(n_hiddens, n_hiddens)  # Additive attention
         self.decoder = nn.Linear(n_hiddens, 2)
         self.nn_ABCD = nn.Sequential(
-            nn.Linear(2, 64),
+            nn.Linear(1, 64),
             nn.ReLU(),
             nn.Linear(64, 64),
             nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Linear(128, 4)
+            nn.Linear(64, 4)
+        )
+        self.lin_f = nn.Sequential(
+            nn.Linear(62, 2)
         )
     def forward(self, src_sym, src_add):
+        # Increase context size
+        src_sym = src_sym[-self.context_size:]
+        src_add = src_add[-self.context_size:]
+
         src_sym = self.embedding_sym(src_sym)
         src_add = self.embedding_add(src_add)
         src = torch.cat((src_sym, src_add), dim=-1)
-        src = src + self.pos_encoder(src)
+        positions = torch.arange(0, src.size(0), dtype=torch.long).unsqueeze(1)
+        src = src + self.pos_encoder(positions)
         output = self.transformer_encoder(src)
-        output = 100 * self.decoder(output[-1])
-        ABCD = self.nn_ABCD(output)
+
+        # Residual connection
+        residual = output
+
+        output = output.permute(1, 2, 0)  # Reshape for convolutional layer
+        output = self.conv1(output)
+        output = output.permute(2, 0, 1)  # Reshape back
+
+        # Additive attention
+        attention_scores = torch.softmax(self.additive_attention(output), dim=0)
+        output = torch.sum(attention_scores * output, dim=0)
+
+        # Residual connection
+        output = output + residual[-1]
+
+        output = 100 * self.decoder(output)
+
+        # Reshape output to (batch_size, sequence_length, input_size)
+        output = self.lin_f(output.view(1, -1))  # Add a dimension for sequence_length
+
+        # Pass a dummy input through nn_ABCD to get ABCD values
+        dummy_input = torch.ones(1, 1)  # Shape: (batch_size, input_size)
+        ABCD = self.nn_ABCD(dummy_input)
+
         A, B, C, D = ABCD[:, 0], ABCD[:, 1], ABCD[:, 2], ABCD[:, 3]
-        return output, A, B, C, D
+        return output.squeeze(1), A, B, C, D
 
 # Parameters
-n_features = 8
-n_hiddens = 128
-n_layers = 64
-n_heads = 32*2
+n_features = 32
+n_hiddens = 32
+n_layers = 32
+n_heads = 16
 n_epochs = 100
-batch_size = 32*2
-learning_rate = 0.0004
+batch_size = 32
+learning_rate = 0.00001
 
 # Create the model
 model = TransformerModel(n_features, n_hiddens, n_layers, n_heads)
@@ -113,10 +140,11 @@ for epoch in range(n_epochs):
     for i in range(0, len(x_sym), batch_size):
         batch_sym = x_sym[i:i+batch_size]
         batch_add = x_add[i:i+batch_size]
+        context_size = model.context_size
 
         # Forward pass
         outputs, A, B, C, D = model(batch_sym[:-1], batch_add[:-1])
-
+        outputs = torch.cat((batch_sym[1:-1], outputs), dim=0)
         # Calculate LHS and RHS
         Radiation = batch_add[1:, 1]
         Wind_Speed = batch_add[1:, 2]
@@ -131,31 +159,33 @@ for epoch in range(n_epochs):
         lhs_list.append(lhs_output.mean().item())
         rhs_list.append(rhs_output.mean().item())
 
-        print("LHS Output:", lhs_output.mean().item(), "RHS Output:", rhs_output.mean().item())
-        print("LHS Actual:", lhs_actual.mean().item(), "RHS Actual:", rhs_actual.mean().item())
-        print("A:", A, "B:", B, "C:", C, "D:", D)
+        # Apply Softmax activation to the model's outputs
+        outputs_softmax = F.softmax(outputs, dim=1)
 
-        loss_s = torch.log((criterion(outputs, batch_sym[1:]) + torch.std(outputs - batch_sym[1:]) + torch.max(torch.abs(criterion(outputs[1:], batch_sym[2:]) - criterion(outputs[:-1], batch_sym[1:-1]))))**4)
-        print("Outputs are ", outputs, "Actual is ", batch_sym[1:], 'inputs are: ', batch_sym[:-1])
+        # Calculate the Cross-Entropy Loss
+        loss_s = F.cross_entropy(outputs_softmax[-1:], batch_sym[-1:])
 
         # Calculate loss_entropy_pde_csts
-        loss_entropy_pde_csts = torch.log(2*torch.abs(rhs_output - lhs_output) * torch.abs(rhs_actual - lhs_actual))
-        print("Entropy PDE Loss:", loss_entropy_pde_csts.mean().item())
-        print("transformer Loss is ", loss_s)
-
+        loss_entropy_pde_csts = torch.log(3+torch.abs(rhs_output - lhs_output) * torch.abs(rhs_actual - lhs_actual))
+        
         loss = loss_entropy_pde_csts.mean().item() + loss_s if not torch.isnan(loss_entropy_pde_csts.mean()) else loss_s
-        print('total loss is ', loss)
 
         # Backward pass and optimization
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.4)
         optimizer.step()
-
         # Store the loss values
         loss_s_values.append(loss_s.item())
         loss_entropy_pde_csts_values.append(loss_entropy_pde_csts.mean().item())
         total_loss_values.append(loss.item())
+        print("LHS Output:", lhs_output.mean().item(), "RHS Output:", rhs_output.mean().item())
+        print("LHS Actual:", lhs_actual.mean().item(), "RHS Actual:", rhs_actual.mean().item())
+        print("A:", A, "B:", B, "C:", C, "D:", D)
+        print("Outputs are ", outputs, "Actual is ", batch_sym[1:], 'inputs are: ', batch_sym[:-1])
+        print("Entropy PDE Loss:", loss_entropy_pde_csts.mean().item())
+        print("transformer Loss is ", loss_s)
+        print('total loss is ', loss)
 
         # Clear the plot
         ax.clear()
@@ -163,7 +193,7 @@ for epoch in range(n_epochs):
         # Plot the losses
         ax.plot(loss_s_values, label='Transformer Loss')
         ax.plot(loss_entropy_pde_csts_values, label='Entropy PDE Loss')
-        ax.plot(total_loss_values, label='Total Loss')
+        ax.plot(total_loss_values, label='Geometric Mean Loss')
 
 
         ax.set_xlabel('Iterations')
