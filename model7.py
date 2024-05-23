@@ -1,4 +1,6 @@
 #potentially to do for model 7: gradient smoothing, take log of loss or loss component, loss component balancing...
+#also see if you really should be estimating the second time step for anything but temperature!
+#de is modified from https://www.sciencedirect.com/science/article/abs/pii/S0020722507000900?via%3Dihub
 import torch
 import torch.nn as nn
 import pandas as pd
