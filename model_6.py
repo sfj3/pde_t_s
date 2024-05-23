@@ -88,7 +88,7 @@ for epoch in range(n_epochs):
         #now the entropy loss with the learned constant entropy
         #learned constant entropy
         alpha,beta,gamma,xi,mu,theta = outputs_grk
-        d_entropy_lce = alpha/temp_2 + beta * i_2 + gamma * v_2 * rh_2 + xi * (rh_2 - rh_1)
+        d_entropy_lce = alpha/temp_2 + beta * i_2 + gamma * v_2 * rh_2 + xi * (rh_2 - rh_1) # look into using the predicted values for _2 here
         #loss for the learned constants to be accurate (learned constant entropy constants loss)
         loss_lcec = 100*(torch.abs(d_entropy_lce-d_entropy_pt)+1)*(torch.abs(mu-d_entropy_pt)+1)*(torch.abs(theta - (rh_2 - rh_1))) #before there was no constant theta
         #now we can compute the temperature and add that to the final loss
@@ -96,7 +96,7 @@ for epoch in range(n_epochs):
         # and the loss on the temperature: 
         # Backward pass and optimization
         optimizer.zero_grad()
-        loss = criterion(torch.cat((outputs[-1,:],t_pred.unsqueeze(0)),dim=0),batch[0,:]) + (loss_lcec)
+        loss = criterion(torch.cat((outputs[-1,:],t_pred.unsqueeze(0)),dim=0),batch[0,:]) + (loss_lcec) # see if focusing more on temperature loss and less on sporadic losses like wind prediction helps, ie use the transformer to estimate the current state for nontemp variables
         loss.backward()
         optimizer.step()
         print("outputs ",torch.cat((outputs[-1,:],t_pred.unsqueeze(0)),dim=0))
