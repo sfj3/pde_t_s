@@ -1,3 +1,4 @@
+#potentially to do for model 7: gradient smoothing, take log of loss or loss component, loss component balancing...
 import torch
 import torch.nn as nn
 import pandas as pd
