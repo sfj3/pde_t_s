@@ -1,4 +1,4 @@
-#potentially to do for model 7: try lstm (xgboost?), gradient smoothing, take log of loss or loss component, loss component balancing...
+#potentially to do for model 7: try predicting nontemp variables like you do temp variables , try lstm (xgboost?), gradient smoothing, take log of loss or loss component, loss component balancing...
 #also see if you really should be estimating the second time step for anything but temperature!
 #de is modified from https://www.sciencedirect.com/science/article/abs/pii/S0020722507000900?via%3Dihub
 import torch
@@ -95,7 +95,7 @@ for epoch in range(n_epochs):
         #loss for the learned constants to be accurate (learned constant entropy constants loss)
         loss_lcec = 100*(torch.abs(d_entropy_lce-d_entropy_pt)+1)*(torch.abs(mu-d_entropy_pt)+1)*(torch.abs(theta - (rh_2 - rh_1))) #before there was no constant theta
         #now we can compute the temperature and add that to the final loss
-        t_pred = alpha * (mu - beta * i_1 - gamma * v_1 * rh_1 - xi *(theta))**-1 #before this was rh2-rh1 instead of theta, you could use rh1 as well to try
+        t_pred = alpha * (mu - beta * i_1 - gamma * v_1 * rh_1 - xi *(theta))**-1 #before this was rh2-rh1 instead of theta, you could use rh1 as well to try, also maybe you can predict all the other variables this way off of each other!
         # and the loss on the temperature: 
         # Backward pass and optimization
         optimizer.zero_grad()
