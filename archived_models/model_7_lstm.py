@@ -24,35 +24,33 @@ class TransformerModel(nn.Module):
     def __init__(self, n_features, n_hiddens, n_layers, n_heads, dropout=0.1):
         super(TransformerModel, self).__init__()
         self.embedding = nn.Linear(5, n_hiddens)
-        encoder_layers = nn.TransformerEncoderLayer(n_hiddens, n_heads, n_hiddens, dropout)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, n_layers)#try lstm instead of transformer here
+        self.lstm = nn.LSTM(n_hiddens, n_hiddens, num_layers=n_layers, batch_first=True)
         self.decoder = nn.Linear(n_hiddens, 2)
 
         self.embedding_greek = nn.Linear(5, n_hiddens)
-        encoder_layers_greek = nn.TransformerEncoderLayer(n_hiddens, n_heads, n_hiddens, dropout)
-        self.transformer_encoder_greek = nn.TransformerEncoder(encoder_layers_greek, n_layers)
+        self.lstm_greek = nn.LSTM(n_hiddens, n_hiddens, num_layers=n_layers, batch_first=True)
         self.decoder_greek = nn.Linear(n_hiddens, 6)
 
     def forward(self, src):
         grk = src
 
         src = self.embedding(src)
-        output = self.transformer_encoder(src)
-        output = 100*torch.abs(self.decoder(output[-1])) # just pressure
-        
+        output, _ = self.lstm(src.unsqueeze(0))
+        output = output.squeeze(0)  # Remove the extra batch dimension
+        output = 100 * torch.abs(self.decoder(output[-1, :]))  # just pressure
+
         src_grk = self.embedding_greek(grk)
-        output_grk = self.transformer_encoder_greek(src_grk)
-        output_grk = self.decoder_greek(output_grk[-1])
+        output_grk, _ = self.lstm_greek(src_grk.unsqueeze(0))
+        output_grk = output_grk.squeeze(0)  # Remove the extra batch dimension
+        output_grk = self.decoder_greek(output_grk[-1, :])
 
-
-
-        return output,output_grk
+        return output, output_grk
 
 # Parameters
 n_features = 128
-n_hiddens = 64
-n_layers = 24
-n_heads = 64
+n_hiddens = 128
+n_layers = 128
+n_heads = 128
 n_epochs = 100
 batch_size = 128
 learning_rate = 0.0001
