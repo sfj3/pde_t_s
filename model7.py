@@ -118,10 +118,10 @@ for epoch in range(n_epochs):
         print("outputs ",x_prime)
         print("actual ", batch[-1, :])
         print("loss",loss,"lcec loss",loss_lcec,"l1 loss " ,loss - loss_lcec)
-        if (i+1) % 300 == 0:
-            learning_rate *= 0.1
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = learning_rate
+        # if (i+1) % 300 == 0:
+        #     learning_rate *= 0.1
+        #     for param_group in optimizer.param_groups:
+        #         param_group['lr'] = learning_rate
 
         # Store the loss values
         loss_values.append(loss.item())
