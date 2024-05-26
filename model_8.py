@@ -18,7 +18,8 @@ from torch.optim.lr_scheduler import StepLR
 # Load and process the DataFrame
 df = pd.read_pickle('sorted.pkl')  # Ensure this is already sorted by time
 df['Temperature']  = (df['Temperature'] + 273)
-df['Relative Humidity']  = df['Relative Humidity']
+df['Relative Humidity']  = df['Relative Humidity']/100
+df['DNI'] = df['DNI']/1000
 df['Pressure']  = df['Pressure']
 # Convert 'Temperature' and 'Pressure' to PyTorch tensors
 x = torch.tensor(df[['Temperature', 'Pressure', 'Relative Humidity', 'DNI', 'Wind Speed']].values, dtype=torch.float32)
@@ -54,12 +55,12 @@ class TransformerModel(nn.Module):
 
 # Parameters
 n_features = 1 #not used
-n_hiddens = 1
+n_hiddens = 2
 n_layers = 1
-n_heads =  1
+n_heads =  2
 n_epochs = 60
 batch_size = 48
-learning_rate = 0.0003460001
+learning_rate = 0.003460001
 
 # Create the model
 model = TransformerModel(n_features, n_hiddens, n_layers, n_heads)
@@ -68,7 +69,7 @@ model = TransformerModel(n_features, n_hiddens, n_layers, n_heads)
 criterion =  nn.CosineSimilarity(dim=0)
 criterion2 = nn.SmoothL1Loss(reduction='mean', beta=3000)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9999996666989898989, patience=5, verbose=True)
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.99, patience=5, verbose=True)
 # Training loop
 if not os.path.exists('plots'):
     os.makedirs('plots')
@@ -103,16 +104,16 @@ for epoch in range(n_epochs):
         alpha,beta,gamma,xi,mu,theta = outputs_grk
 
         p_pred = p_1
-        t_pred = temp_1 #not used ,, before this was rh2-rh1 instead of theta, you could use rh1 as well to try, also maybe you can predict all the other variables this way off of each other!
+        t_pred = temp_1
         r_pred = (v_1*gamma)**-1 * (mu - alpha * t_pred **-1 - beta * i_1 - xi*theta) + rh_1 
         v_pred = (r_pred*gamma)**-1 * (mu - alpha * t_pred **-1 - beta * i_1 - xi*theta) + v_1 
         i_pred = beta ** -1 * (mu - alpha/t_pred - gamma * v_pred * r_pred - xi*theta) + i_1 
-        t_pred = (mu - beta * i_pred - gamma * v_1 * r_pred - xi *(theta))**-1 + temp_1  #- #t * alpha * (mu - beta * i_pred - gamma * v_pred * r_pred - xi *(theta))**-1
+        t_pred = (mu - beta * i_pred - gamma * v_1 * r_pred - xi *(theta))**-1 + temp_1
         p_pred =torch.exp((mu - torch.log(t_pred/temp_1))/8.314 + torch.log(p_1))
         r_pred = (v_1*gamma)**-1 * (mu - alpha * t_pred **-1 - beta * i_1 - xi*theta) + rh_1
         v_pred = (r_pred*gamma)**-1 * (mu - alpha * t_pred **-1 - beta * i_1 - xi*theta) + v_1 
         i_pred = beta ** -1 * (mu - alpha/t_pred - gamma * v_pred * r_pred - xi*theta) + i_1 
-        t_pred = (mu - beta * i_pred - gamma * v_1 * r_pred - xi *(theta))**-1 + temp_1  #- #t * alpha * (mu - beta * i_pred - gamma * v_pred * r_pred - xi *(theta))**-1
+        t_pred = (mu - beta * i_pred - gamma * v_1 * r_pred - xi *(theta))**-1 + temp_1
         p_pred =torch.exp((mu - torch.log(t_pred/temp_1))/8.314 + torch.log(p_1)) 
         x_prime = torch.cat((t_pred.unsqueeze(0),p_pred.unsqueeze(0),r_pred.unsqueeze(0),i_pred.unsqueeze(0),v_pred.unsqueeze(0)))
     
@@ -122,7 +123,7 @@ for epoch in range(n_epochs):
         # l_entropy_forcheck = torch.abs(torch.log(temp_2/temp_1)  + 8.314 * torch.log(p_2/p_1) - (torch.log(temp_2/temp_1)  + 8.314 * torch.log(p_2/p_1)))
         d_entropy_lce = (alpha/temp_2 + beta * i_2 + gamma * v_2  + xi *theta ) - (alpha/temp_1 + beta * i_1 + gamma * v_1 * rh_1 + xi * (rh_2-rh_1)) 
         #loss for the learned constants to be accurate (learned constant entropy constants loss)
-        loss_lcec = (torch.abs(t_pred-temp_2)**2+torch.abs(p_pred-p_2)**2+(torch.abs(d_entropy_lce-d_entropy_pt))+torch.abs(d_entropy_lce-mu))+(torch.abs(mu-d_entropy_pt))+(torch.abs(theta - (rh_2 - rh_1)))#before there was no constant theta
+        loss_lcec = torch.abs(v_pred-v_2)+torch.abs(r_pred-rh_2)+(torch.abs(i_pred-i_2)+torch.abs(t_pred-temp_2)+torch.abs(p_pred-p_2)+(torch.abs(d_entropy_lce-d_entropy_pt))+torch.abs(d_entropy_lce-mu))+(torch.abs(mu-d_entropy_pt))+(torch.abs(theta - (rh_2 - rh_1)))#before there was no constant theta
         loss_lcec = torch.lgamma(loss_lcec)
         #now we can compute the temperature and add that to the final loss
         # Backward pass and optimization
