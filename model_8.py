@@ -131,7 +131,7 @@ for epoch in range(n_epochs):
         loss =  (criterion2(x_prime[0:2],batch[-1,0:2]) )   #+ criterion(x_prime,batch[-1,])))# see if focusing more on temperature loss and less on sporadic losses like wind prediction helps, ie use the transformer to estimate the current state for nontemp variables
         # loss += torch.max(prevloss / (loss.detach()+1),loss.detach() / (prevloss+1))
         # loss_a = torch.max(loss_lcec.detach() / (loss.detach()+1) ,loss.detach()/loss_lcec.detach()+1)
-        loss = torch.lgamma(loss) + loss_lcec + criterion(x_prime[0:],batch[-1,0:])
+        loss = torch.lgamma(1+loss) + loss_lcec + torch.lgamma(criterion(x_prime[0:],batch[-1,0:]))
         loss.backward()
         if torch.isnan(torch.cat([p.grad.view(-1) for p in model.parameters()])).any():
             print("NaN gradient detected. Saving the last valid model state.")
