@@ -54,19 +54,19 @@ class TransformerModel(nn.Module):
 
 # Parameters
 n_features = 1 #not used
-n_hiddens = 1
+n_hiddens = 2
 n_layers = 1
-n_heads =  1
+n_heads =  2
 n_epochs = 120
 batch_size = 48
-learning_rate = 0.000003460001
+learning_rate = 0.00003460001
 
 # Create the model
 model = TransformerModel(n_features, n_hiddens, n_layers, n_heads)
 
 # Loss function and optimizer
 criterion =  nn.CosineSimilarity(dim=0)
-criterion2 = nn.SmoothL1Loss(reduction='mean', beta=0.1)
+criterion2 = nn.SmoothL1Loss(reduction='mean', beta=3000)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9999996666989898989, patience=5, verbose=True)
 # Training loop
@@ -79,6 +79,7 @@ diff_loss_values = []
 fig, ax = plt.subplots(figsize=(10, 5))
 
 for epoch in range(n_epochs):
+    last_valid_state = model.state_dict()
     print(epoch)
     prevloss = 0
     for i in range(0, len(x), batch_size):
@@ -108,6 +109,11 @@ for epoch in range(n_epochs):
         i_pred = beta ** -1 * (mu - alpha/t_pred - gamma * v_pred * r_pred - xi*theta) + i_1 
         t_pred = (mu - beta * i_pred - gamma * v_1 * r_pred - xi *(theta))**-1 + temp_1  #- #t * alpha * (mu - beta * i_pred - gamma * v_pred * r_pred - xi *(theta))**-1
         p_pred =torch.exp((mu - torch.log(t_pred/temp_1))/8.314 + torch.log(p_1))
+        r_pred = (v_1*gamma)**-1 * (mu - alpha * t_pred **-1 - beta * i_1 - xi*theta) + rh_1
+        v_pred = (r_pred*gamma)**-1 * (mu - alpha * t_pred **-1 - beta * i_1 - xi*theta) + v_1 
+        i_pred = beta ** -1 * (mu - alpha/t_pred - gamma * v_pred * r_pred - xi*theta) + i_1 
+        t_pred = (mu - beta * i_pred - gamma * v_1 * r_pred - xi *(theta))**-1 + temp_1  #- #t * alpha * (mu - beta * i_pred - gamma * v_pred * r_pred - xi *(theta))**-1
+        p_pred =torch.exp((mu - torch.log(t_pred/temp_1))/8.314 + torch.log(p_1)) 
         x_prime = torch.cat((t_pred.unsqueeze(0),p_pred.unsqueeze(0),r_pred.unsqueeze(0),i_pred.unsqueeze(0),v_pred.unsqueeze(0)))
     
         #all_pred  = torch.cat((batch[:-1,],x_prime.unsqueeze(0)),0) # maybe comment out
@@ -122,12 +128,16 @@ for epoch in range(n_epochs):
         # Backward pass and optimization
         optimizer.zero_grad()
 
-        loss =  (criterion2(x_prime[0:2],batch[-1,0:2]) + criterion(x_prime[0:],batch[-1,0:]))   #+ criterion(x_prime,batch[-1,])))# see if focusing more on temperature loss and less on sporadic losses like wind prediction helps, ie use the transformer to estimate the current state for nontemp variables
+        loss =  (criterion2(x_prime[0:2],batch[-1,0:2]) )   #+ criterion(x_prime,batch[-1,])))# see if focusing more on temperature loss and less on sporadic losses like wind prediction helps, ie use the transformer to estimate the current state for nontemp variables
         # loss += torch.max(prevloss / (loss.detach()+1),loss.detach() / (prevloss+1))
         # loss_a = torch.max(loss_lcec.detach() / (loss.detach()+1) ,loss.detach()/loss_lcec.detach()+1)
-        loss = torch.lgamma(loss) + loss_lcec
+        loss = torch.lgamma(loss) + loss_lcec + criterion(x_prime[0:],batch[-1,0:])
         loss.backward()
-        
+        if torch.isnan(torch.cat([p.grad.view(-1) for p in model.parameters()])).any():
+            print("NaN gradient detected. Saving the last valid model state.")
+            torch.save(last_valid_state, 'last_valid_model.pth')
+            # You can choose to break the training loop here if needed
+            break
         print(i)
         print('loss lcec',loss_lcec,'loss',loss)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) 
@@ -158,7 +168,7 @@ for epoch in range(n_epochs):
 
             ax.set_xlabel('Iterations')
             ax.set_ylabel('Loss')
-            ax.set_yscale('log')
+            # ax.set_yscale('log')
             ax.legend()
 
             # Save the plot to a buffer
