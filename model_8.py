@@ -18,7 +18,7 @@ from torch.optim.lr_scheduler import StepLR
 # Load and process the DataFrame
 df = pd.read_pickle('sorted.pkl')  # Ensure this is already sorted by time
 df['Temperature']  = (df['Temperature'] + 273)
-df['Relative Humidity']  = df['Relative Humidity']/100
+df['Relative Humidity']  = df['Relative Humidity']
 df['Pressure']  = df['Pressure']
 # Convert 'Temperature' and 'Pressure' to PyTorch tensors
 x = torch.tensor(df[['Temperature', 'Pressure', 'Relative Humidity', 'DNI', 'Wind Speed']].values, dtype=torch.float32)
@@ -54,12 +54,12 @@ class TransformerModel(nn.Module):
 
 # Parameters
 n_features = 1 #not used
-n_hiddens = 2
+n_hiddens = 1
 n_layers = 1
-n_heads =  2
-n_epochs = 120
+n_heads =  1
+n_epochs = 60
 batch_size = 48
-learning_rate = 0.00003460001
+learning_rate = 0.0003460001
 
 # Create the model
 model = TransformerModel(n_features, n_hiddens, n_layers, n_heads)
@@ -122,7 +122,7 @@ for epoch in range(n_epochs):
         # l_entropy_forcheck = torch.abs(torch.log(temp_2/temp_1)  + 8.314 * torch.log(p_2/p_1) - (torch.log(temp_2/temp_1)  + 8.314 * torch.log(p_2/p_1)))
         d_entropy_lce = (alpha/temp_2 + beta * i_2 + gamma * v_2  + xi *theta ) - (alpha/temp_1 + beta * i_1 + gamma * v_1 * rh_1 + xi * (rh_2-rh_1)) 
         #loss for the learned constants to be accurate (learned constant entropy constants loss)
-        loss_lcec = ((torch.abs(d_entropy_lce-d_entropy_pt))+torch.abs(d_entropy_lce-mu))+(torch.abs(mu-d_entropy_pt))+(torch.abs(theta - (rh_2 - rh_1)))#before there was no constant theta
+        loss_lcec = (torch.abs(t_pred-temp_2)**2+torch.abs(p_pred-p_2)**2+(torch.abs(d_entropy_lce-d_entropy_pt))+torch.abs(d_entropy_lce-mu))+(torch.abs(mu-d_entropy_pt))+(torch.abs(theta - (rh_2 - rh_1)))#before there was no constant theta
         loss_lcec = torch.lgamma(loss_lcec)
         #now we can compute the temperature and add that to the final loss
         # Backward pass and optimization
