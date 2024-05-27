@@ -141,8 +141,8 @@ for epoch in range(num_epochs):
         if i == len(x_features_normalized)-1: continue # because we are estimating the next step
         if i<=25: continue # because we are training on the previous 24 hours of fft(EVERYTHING) in the data using a transformer.
 
-        entropy_t2 = torch.log(torch.e+x_features_normalized[i+1,0])- 8.314 *torch.log(torch.e+x_features_normalized[i+1,1]/2) # divide by two so you dont get negative numbers, theyve already been batch normed
-        entropy_t1 = torch.log(torch.e+x_features_normalized[i,0])- 8.314*torch.log(torch.e+x_features_normalized[i,1]/2)
+        entropy_t2 = torch.log(torch.e+x_features_normalized[i+1,0])- torch.log(torch.e+x_features_normalized[i+1,1]/2) # divide by two so you dont get negative numbers, theyve already been batch normed
+        entropy_t1 = torch.log(torch.e+x_features_normalized[i,0])- torch.log(torch.e+x_features_normalized[i,1]/2)
         d_s_actual = entropy_t2-entropy_t1
 
         # u_t = f_1(x_features_normalized[i,0:2])
@@ -165,23 +165,23 @@ for epoch in range(num_epochs):
         t_estimate = t_p_estimate[0] * t_p_weights[0:10]
         p_estimate = t_p_estimate[1] * t_p_weights[10:20]
 
-        s_predicted = t_estimate *  - 8.314 * p_estimate 
+        s_predicted = t_estimate  * p_estimate 
         s_new_estimate = s_predicted #+ s_current_estimated[0]-8.314*s_current_estimated[1]
         s_current_inverse = xfmr.u1_inverse(s_new_estimate)
-        t_predicted = s_new_estimate + 8.314*torch.log(torch.e+x_features_normalized[i,1]/2)
+        t_predicted = s_new_estimate + torch.log(torch.e+x_features_normalized[i,1]/2)
         p_predicted = s_new_estimate - torch.log(torch.e+x_features_normalized[i,0])
         #DS PREDICTED SHOULD BE t_p_estimate[0] - 8.314 * t_p_estimate[1]   - ( x_features_normalized[i,0] - 8.314 *x_features_normalized[i,1] )
         # loss = torch.abs()
         # entropy loss should be entropy at a point estimated with the u1_forward
         #the difference will give you the entropy thats how you put them together, ie
         #s_current_estimated - s_current actual, bijective knowing how its put together             do something with ds backwards?
-        s_current_entropy_form = s_current_estimated[0]-8.314*s_current_estimated[1]+torch.log(torch.e+x_features_normalized[i,0]) #this is the estimated current entropy, now the error for this is
+        s_current_entropy_form = s_current_estimated[0]-s_current_estimated[1]+torch.log(torch.e+x_features_normalized[i,0]) #this is the estimated current entropy, now the error for this is
         
         #these four losses are the entropy losses
         loss1 = torch.sum((torch.abs(s_current_entropy_form - entropy_t1)))
         
         #delta s current estimated - delta s current actual
-        loss2 = torch.abs(t_p_estimate[0] - 8.314 * t_p_estimate[1]   - ( x_features_normalized[i,0] - 8.314 *x_features_normalized[i,1] ))
+        loss2 = torch.abs(t_p_estimate[0] -  t_p_estimate[1]   - ( x_features_normalized[i,0] - x_features_normalized[i,1] ))
         #s next - s next actual, where s next is s_current_estimated + delta_s_current_estimated
         loss_3 = torch.sum(torch.abs(s_current_entropy_form + s_predicted - loss2)) 
         # the inverse of s_current entropy form should equate to the temperature and pressure
@@ -192,9 +192,9 @@ for epoch in range(num_epochs):
         t_next_actual = x_features_normalized[i+1,0]
         p_next_actual = x_features_normalized[i+1,1]
         everything_actual_prev = x_features_normalized[i,]
-        value_loss = torch.lgamma(torch.sum((1+torch.abs((p_predicted-p_next_actual)) * (1+torch.abs(t_predicted - t_next_actual)))))
+        value_loss = torch.lgamma(40*torch.sum((1+torch.abs((p_predicted-p_next_actual)) * (1+torch.abs(t_predicted - t_next_actual)))))
         entropy_loss = torch.lgamma(torch.sum(torch.abs(loss1)+torch.abs(loss2)+torch.abs(loss_3)+torch.abs(loss_4)))
-        inductive_bias = torch.abs(value_loss.detach() - entropy_loss.detach()) #+ torch.log(torch.max(entropy_loss.detach()/prev_entropy_loss,prev_entropy_loss/entropy_loss.detach())))
+        inductive_bias = torch.lgamma(value_loss.detach() - entropy_loss.detach()) #+ torch.log(torch.max(entropy_loss.detach()/prev_entropy_loss,prev_entropy_loss/entropy_loss.detach())))
         # # inductive_bias = inductive_bias1/value_loss
         # if(inductive_bias<10**3):
         #      lrd *= 0.0001
@@ -203,7 +203,7 @@ for epoch in range(num_epochs):
 
         if (i+1) % 100 == 0:
                     print('learning rate',lrd)
-                    lrd = lrd *2 
+                    lrd = lrd /1.01010101010101
                     # if lrd< 0.000000000001: 
                     #     lrd = 0.06
                     for param_group in optimizer.param_groups:
@@ -247,10 +247,8 @@ for epoch in range(num_epochs):
                 print(" ")
                 print("step ",i)
                 print("Previous Actual Everything (normalized) ", x_features_normalized[i,])
-                print("Next Actual: T, P (normalized) ",t_next_actual,p_next_actual)
-                print("Estimated T, P (normalized) ",t_predicted,p_predicted)
-                print('real next step temp and pressure',x_features_unnormalized_nextStep_actual)
                 print('estimated next step temp and pressure', T_P_features_unnormalized_nextStep_predicted)
+                print('actual temp and pressure',x_features_unnormalized_nextStep_actual[0],x_features_unnormalized_nextStep_actual[1])
                 print(" ")
                 print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
                 # Clear the plot
