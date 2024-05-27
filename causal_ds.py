@@ -11,7 +11,8 @@ import numpy as np
 import io
 from PIL import Image
 from torch.optim.lr_scheduler import StepLR
-
+# wee if you can learn a const to rescale entropy, params may also need a global search
+#also need to show the map by weights
 torch.autograd.set_detect_anomaly(True)
 # Data stuff
 df = pd.read_pickle('sorted.pkl')  # Ensure this is already sorted by time
@@ -141,7 +142,7 @@ class TransformerModel(nn.Module):
 # f_1 = PositionalEncoding_1() # 10 layers       we may or may not actually need these..       
 # f_2 = PositionalEncoding_2() # 10 layers
 xfmr = TransformerModel()
-lrd = 0.00000000000008808880888088088808801
+lrd = 0.000001
 optimizer = optim.Adam(xfmr.parameters(), lr=lrd)
 
 # lrd_pe = 0.00011111
@@ -185,16 +186,16 @@ for epoch in range(num_epochs):
 
         x_current = x_features_normalized[i]
         t_p_estimate = torch.abs(torch.sum(out.view(2,10) * x_current,axis=-1)) # this is the temperature and pressure estimate
-        d_s_predicted = torch.sum(t_p_estimate)
-        s_new_estimate = d_s_predicted + s_current_estimated[0]-8.314*s_current_estimated[1]
+        d_s_predicted = t_p_estimate[-1]
+        s_new_estimate = d_s_predicted #+ s_current_estimated[0]-8.314*s_current_estimated[1]
         s_current_inverse = xfmr.u1_inverse(s_new_estimate)
-        t_predicted = s_new_estimate[0]
-        p_predicted = s_new_estimate[1]
+        t_predicted = s_new_estimate + 8.314*torch.log(torch.e+x_features_normalized[i,1]/2)
+        p_predicted = s_new_estimate - torch.log(torch.e+x_features_normalized[i,0])
         # loss = torch.abs()
         # entropy loss should be entropy at a point estimated with the u1_forward
         #the difference will give you the entropy thats how you put them together, ie
         #s_current_estimated - s_current actual, bijective knowing how its put together
-        s_current_entropy_form = s_current_estimated[0]-8.314*s_current_estimated[1] #this is the estimated current entropy, now the error for this is
+        s_current_entropy_form = s_current_estimated[0]-8.314*s_current_estimated[1]+torch.log(torch.e+x_features_normalized[i,0]) #this is the estimated current entropy, now the error for this is
         
         #these four losses are the entropy losses
         loss1 = torch.sum((torch.abs(s_current_entropy_form - entropy_t1)))
@@ -205,14 +206,15 @@ for epoch in range(num_epochs):
         loss_3 = torch.sum(torch.abs(s_current_entropy_form + d_s_predicted - entropy_t2)) 
         # the inverse of s_current entropy form should equate to the temperature and pressure
         loss_4 = torch.sum(torch.abs(s_current_entropy_form - t_p_estimate))
+        #s_current_inverse 
         #those are your four equations for the loss function
         #t and p next are the standard loss
         t_next_actual = x_features_normalized[i+1,0]
         p_next_actual = x_features_normalized[i+1,1]
         everything_actual_prev = x_features_normalized[i,]
-        value_loss = torch.abs((p_predicted-p_next_actual) + torch.abs(t_predicted - t_next_actual))
-        entropy_loss = loss1+loss2+loss_3+loss_4
-        inductive_bias = torch.log(value_loss.detach() - entropy_loss.detach()) #+ torch.log(torch.max(entropy_loss.detach()/prev_entropy_loss,prev_entropy_loss/entropy_loss.detach())))
+        value_loss = torch.lgamma((1+torch.abs((p_predicted-p_next_actual)) * (1+torch.abs(t_predicted - t_next_actual))))
+        entropy_loss = torch.lgamma(torch.abs(loss1)+torch.abs(loss2)+torch.abs(loss_3)+torch.abs(loss_4))
+        inductive_bias = torch.abs(value_loss.detach() - entropy_loss.detach()) #+ torch.log(torch.max(entropy_loss.detach()/prev_entropy_loss,prev_entropy_loss/entropy_loss.detach())))
         # # inductive_bias = inductive_bias1/value_loss
         # if(inductive_bias<10**3):
         #      lrd *= 0.0001
@@ -227,13 +229,13 @@ for epoch in range(num_epochs):
         #                 param_group['lr'] = lrd
 
 
-        loss = entropy_loss#*1.1 + 1.2*inductive_bias #+ value_loss #we want slight more bias for the entropy loss
+        loss = 1.5*entropy_loss + 0.5*inductive_bias + value_loss #we want slight more bias for the entropy loss
         prev_value_loss = value_loss
         prev_entropy_loss = prev_entropy_loss
         # if(torch.isnan(loss)):break
-        torch.nn.utils.clip_grad_norm_(xfmr.parameters(), max_norm= 11.0) 
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.999, patience=5, verbose=True)
-        scheduler.step(loss)
+        # torch.nn.utils.clip_grad_norm_(xfmr.parameters(), max_norm= 11.0) 
+        # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.999, patience=5, verbose=True)
+        # scheduler.step(loss)
         # loss1 = value_loss + entropy_loss + inductive_bias**2
 
         optimizer.zero_grad()
@@ -275,14 +277,14 @@ for epoch in range(num_epochs):
                 ax.clear()
 
                 # Plot the losses
-                # ax.plot(total_losses, label='Total Loss')
+                ax.plot(total_losses, label='Total Loss')
                 ax.plot(entropy_losses, label='Entropy of Prediction vs Actual (EoPvA)')
                 ax.plot(temp_pressure_losses, label='Predictive T,P Loss')
                 ax.plot(inductive_losses,label = "Inductive Bias")
 
                 ax.set_xlabel('Iterations')
-                ax.set_ylabel('Log')
-                ax.set_yscale('log')
+                ax.set_ylabel('Loss')
+                # ax.set_yscale('log')
                 ax.legend()
 
                 # Save the plot to a buffer
