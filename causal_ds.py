@@ -46,70 +46,45 @@ x_features_unnormalized = ((((x_features_normalized-torch.e) / 10)-0.00000000000
 # print("Unnormalized tensor:", x)
 
 
-
-
-#positional encoding for d prime
-class PositionalEncoding_2(nn.Module):
-    def __init__(self):
-        num_layers = 10
-        super().__init__()
-        self.num_layers = num_layers
-        for _ in range(num_layers):
-            self.scale_ = nn.Parameter(torch.ones(10))
-            self.bias_ = nn.Parameter(torch.zeros(10))
-
-    def forward(self, x: Tensor) -> Tensor:
-        num_layers = self.num_layers
-        for _ in range(num_layers):
-            x = self.scale_*x + self.bias_
-            x = torch.sigmoid(x)
-        return x
-        
-
-    def inverse(self, output: Tensor) -> Tensor:
-        num_layers = self.num_layers
-        x = output
-        for _ in reversed(range(num_layers)):
-            x = torch.log(x/ (1 - x))
-            x = (x - self.bias_)/self.scale_
-        return x
-
-
 class TransformerModel(nn.Module):
     def __init__(self):
         super(TransformerModel, self).__init__()
         self.f_3 = nn.TransformerEncoderLayer(d_model=(24),nhead=24)
-        self.conv1 = nn.Conv1d(in_channels=2, out_channels=2, kernel_size=1)
+        self.conv1 = nn.Conv1d(in_channels=2, out_channels=10, kernel_size=3)
         # then dense
-        self.dense = nn.Linear(20, 20)
+        self.dense1 = nn.Linear(24, 24)
+        self.dense2 = nn.Linear(24, 24)
+        self.dense3 = nn.Linear(22, 24)
+        self.f_4 = nn.TransformerEncoderLayer(d_model=(24),nhead=24)
         # then relu at the end, well whatever will bring them between 0 and 1, so maybe 
 
 
 
         #then for the pe 
-        num_layers = 2
+        num_layers = 10
         self.num_layers = num_layers
         for _ in range(num_layers):
             self.scale_ = nn.Parameter(torch.ones(10))
             self.bias_ = nn.Parameter(torch.zeros(10))
 
         #then for the mu model
-        for _ in range(2):
-            self.scale_mu_ = nn.Parameter(torch.ones(2))
-            self.bias_mu_ = nn.Parameter(torch.zeros(2))
+        for _ in range(10):
+            self.scale_mu_ = nn.Parameter(torch.ones(10))
+            self.bias_mu_ = nn.Parameter(torch.zeros(10))
 
     def forward(self, src,s_current_estimated):
+        src[:,0:2] =torch.sum(s_current_estimated) # not passing temperature or pressure here, instead passing s_current_estimated
         x_prev_24_with_fft = torch.abs(torch.cat((src,torch.fft.fft(src)))).view(10,2,24)
         x = torch.relu(x_prev_24_with_fft)
-        x = self.f_3(x)
+        x = self.f_3(self.dense1(x))  +self.f_4(self.dense2(x)) 
         x = torch.relu(x)
         x = self.conv1(x)
         x = torch.relu(x)
         x = x.squeeze(1)
-        x = x.view(24,20)
-        x = self.dense(x)
-        x = x[-1]
+        x = self.dense3(x)
+        x = x[-1] + torch.sum(s_current_estimated)
         x = torch.relu(x)
+
         # print(x.shape)
         return x
     
@@ -119,7 +94,7 @@ class TransformerModel(nn.Module):
     def u1_forward(self, x: Tensor) -> Tensor: #this is the forward of the current entropy estimate model on just t and p 
         num_layers = self.num_layers
         for _ in range(num_layers):
-            x = self.scale_mu_*x + self.bias_mu_
+            x = self.scale_mu_*torch.sum(x[0]) + self.bias_mu_ *torch.sum(x[1])
             x = torch.sigmoid(x)
         return x
         
@@ -142,7 +117,7 @@ class TransformerModel(nn.Module):
 # f_1 = PositionalEncoding_1() # 10 layers       we may or may not actually need these..       
 # f_2 = PositionalEncoding_2() # 10 layers
 xfmr = TransformerModel()
-lrd = 0.000001
+lrd = 1
 optimizer = optim.Adam(xfmr.parameters(), lr=lrd)
 
 # lrd_pe = 0.00011111
@@ -185,25 +160,30 @@ for epoch in range(num_epochs):
         
 
         x_current = x_features_normalized[i]
-        t_p_estimate = torch.abs(torch.sum(out.view(2,10) * x_current,axis=-1)) # this is the temperature and pressure estimate
-        d_s_predicted = t_p_estimate[-1]
-        s_new_estimate = d_s_predicted #+ s_current_estimated[0]-8.314*s_current_estimated[1]
+        t_p_estimate = torch.sum(out,-1) # this is the temperature and pressure estimate, look at the other values to see if they are weights. 
+        t_p_weights = torch.sum(out[0:-1,4:],0) # t is 0 to 10, p is 10 to 20
+        t_estimate = t_p_estimate[0] * t_p_weights[0:10]
+        p_estimate = t_p_estimate[1] * t_p_weights[10:20]
+
+        s_predicted = t_estimate *  - 8.314 * p_estimate 
+        s_new_estimate = s_predicted #+ s_current_estimated[0]-8.314*s_current_estimated[1]
         s_current_inverse = xfmr.u1_inverse(s_new_estimate)
         t_predicted = s_new_estimate + 8.314*torch.log(torch.e+x_features_normalized[i,1]/2)
         p_predicted = s_new_estimate - torch.log(torch.e+x_features_normalized[i,0])
+        #DS PREDICTED SHOULD BE t_p_estimate[0] - 8.314 * t_p_estimate[1]   - ( x_features_normalized[i,0] - 8.314 *x_features_normalized[i,1] )
         # loss = torch.abs()
         # entropy loss should be entropy at a point estimated with the u1_forward
         #the difference will give you the entropy thats how you put them together, ie
-        #s_current_estimated - s_current actual, bijective knowing how its put together
+        #s_current_estimated - s_current actual, bijective knowing how its put together             do something with ds backwards?
         s_current_entropy_form = s_current_estimated[0]-8.314*s_current_estimated[1]+torch.log(torch.e+x_features_normalized[i,0]) #this is the estimated current entropy, now the error for this is
         
         #these four losses are the entropy losses
         loss1 = torch.sum((torch.abs(s_current_entropy_form - entropy_t1)))
         
         #delta s current estimated - delta s current actual
-        loss2 = torch.sum(torch.abs(d_s_predicted - d_s_actual)) 
+        loss2 = torch.abs(t_p_estimate[0] - 8.314 * t_p_estimate[1]   - ( x_features_normalized[i,0] - 8.314 *x_features_normalized[i,1] ))
         #s next - s next actual, where s next is s_current_estimated + delta_s_current_estimated
-        loss_3 = torch.sum(torch.abs(s_current_entropy_form + d_s_predicted - entropy_t2)) 
+        loss_3 = torch.sum(torch.abs(s_current_entropy_form + s_predicted - loss2)) 
         # the inverse of s_current entropy form should equate to the temperature and pressure
         loss_4 = torch.sum(torch.abs(s_current_entropy_form - t_p_estimate))
         #s_current_inverse 
@@ -212,8 +192,8 @@ for epoch in range(num_epochs):
         t_next_actual = x_features_normalized[i+1,0]
         p_next_actual = x_features_normalized[i+1,1]
         everything_actual_prev = x_features_normalized[i,]
-        value_loss = torch.lgamma((1+torch.abs((p_predicted-p_next_actual)) * (1+torch.abs(t_predicted - t_next_actual))))
-        entropy_loss = torch.lgamma(torch.abs(loss1)+torch.abs(loss2)+torch.abs(loss_3)+torch.abs(loss_4))
+        value_loss = torch.lgamma(torch.sum((1+torch.abs((p_predicted-p_next_actual)) * (1+torch.abs(t_predicted - t_next_actual)))))
+        entropy_loss = torch.lgamma(torch.sum(torch.abs(loss1)+torch.abs(loss2)+torch.abs(loss_3)+torch.abs(loss_4)))
         inductive_bias = torch.abs(value_loss.detach() - entropy_loss.detach()) #+ torch.log(torch.max(entropy_loss.detach()/prev_entropy_loss,prev_entropy_loss/entropy_loss.detach())))
         # # inductive_bias = inductive_bias1/value_loss
         # if(inductive_bias<10**3):
@@ -221,15 +201,16 @@ for epoch in range(num_epochs):
         #      for param_group in optimizer.param_groups:
         #          param_group['lr'] = lrd
 
-        # if (i+1) % 29 == 0:
-        #             lrd *= 0.1
-        #             if lrd< 0.00001: 
-        #                 lrd = 0.06
-        #             for param_group in optimizer.param_groups:
-        #                 param_group['lr'] = lrd
+        if (i+1) % 100 == 0:
+                    print('learning rate',lrd)
+                    lrd = lrd *2 
+                    # if lrd< 0.000000000001: 
+                    #     lrd = 0.06
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = lrd
 
 
-        loss = 1.5*entropy_loss + 0.5*inductive_bias + value_loss #we want slight more bias for the entropy loss
+        loss = 1.5*entropy_loss + inductive_bias + value_loss #we want slight more bias for the entropy loss
         prev_value_loss = value_loss
         prev_entropy_loss = prev_entropy_loss
         # if(torch.isnan(loss)):break
@@ -252,23 +233,22 @@ for epoch in range(num_epochs):
         total_losses.append(loss.item())
         inductive_losses.append(inductive_bias.item())
         if (i) % 100 == 0:
+                
+
+                print("value loss, entropy loss",value_loss,entropy_loss)
+
+                x_features_unnormalized_nextStep_actual=((((x_features_normalized[i+1]-torch.e) / 10)-0.0000000000001 * torch.sqrt(batch_norm.running_var.detach() + batch_norm.eps)) + batch_norm.running_mean.detach())
+                x_features_normalized_nextStep_predicted = x_features_normalized[i] #just for the skeptics
+
+                x_features_normalized_nextStep_predicted[0],x_features_normalized_nextStep_predicted[1] = torch.sum(t_predicted[0]).detach(),torch.sum(p_predicted).detach()
+                T_P_features_unnormalized_nextStep_predicted=((((x_features_normalized_nextStep_predicted-torch.e) / 10)-0.0000000000001 * torch.sqrt(batch_norm.running_var + batch_norm.eps)) + batch_norm.running_mean) [0:2]
+                
                 print("------------------------------------------------")
                 print(" ")
                 print("step ",i)
                 print("Previous Actual Everything (normalized) ", x_features_normalized[i,])
                 print("Next Actual: T, P (normalized) ",t_next_actual,p_next_actual)
                 print("Estimated T, P (normalized) ",t_predicted,p_predicted)
-                print("Actual Entropy Change",d_s_actual)
-                print("Predicted Entropy Change", d_s_predicted)
-                print("value loss, entropy loss",value_loss,entropy_loss)
-
-                x_features_unnormalized_nextStep_actual=((((x_features_normalized[i+1]-torch.e) / 10)-0.0000000000001 * torch.sqrt(batch_norm.running_var.detach() + batch_norm.eps)) + batch_norm.running_mean.detach())
-                x_features_normalized_nextStep_predicted = x_features_normalized[i] #just for the skeptics
-
-                x_features_normalized_nextStep_predicted[0],x_features_normalized_nextStep_predicted[1] = t_predicted.detach(),p_predicted.detach()
-                T_P_features_unnormalized_nextStep_predicted=((((x_features_normalized_nextStep_predicted-torch.e) / 10)-0.0000000000001 * torch.sqrt(batch_norm.running_var + batch_norm.eps)) + batch_norm.running_mean) [0:2]
-                
-                
                 print('real next step temp and pressure',x_features_unnormalized_nextStep_actual)
                 print('estimated next step temp and pressure', T_P_features_unnormalized_nextStep_predicted)
                 print(" ")
@@ -284,7 +264,7 @@ for epoch in range(num_epochs):
 
                 ax.set_xlabel('Iterations')
                 ax.set_ylabel('Loss')
-                # ax.set_yscale('log')
+                ax.set_yscale('log')
                 ax.legend()
 
                 # Save the plot to a buffer

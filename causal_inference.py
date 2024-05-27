@@ -48,7 +48,7 @@ class TransformerModel(nn.Module):
 
 
         #then for the pe 
-        num_layers = 2
+        num_layers = 10
         self.num_layers = num_layers
         for _ in range(num_layers):
             self.scale_ = nn.Parameter(torch.ones(10))
